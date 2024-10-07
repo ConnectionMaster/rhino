@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.mozilla.javascript.ScriptRuntime.StringIdOrIndex;
@@ -1344,8 +1345,19 @@ public abstract class ScriptableObject
         so.defineProperty(propertyName, value, attributes);
     }
 
-    /** Utility method to add lambda properties to arbitrary Scriptable object. */
-    protected void defineProperty(
+    /**
+     * Utility method to add lambda properties to arbitrary Scriptable object.
+     *
+     * @param scope ScriptableObject to define the property on
+     * @param name the name of the property to define.
+     * @param length the arity of the function
+     * @param target an object that implements the function in Java. Since Callable is a
+     *     single-function interface this will typically be implemented as a lambda.
+     * @param attributes the attributes of the JavaScript property
+     * @param propertyAttributes Sets the attributes of the "name", "length", and "arity" properties
+     *     of the internal LambdaFunction, which differ for many * native objects.
+     */
+    public void defineProperty(
             Scriptable scope,
             String name,
             int length,
@@ -1688,6 +1700,63 @@ public abstract class ScriptableObject
         slot.setAttributes(attributes);
         slot.getter = getter;
         slot.setter = setter;
+    }
+
+    /**
+     * Define a property on this object that is implemented using lambda functions accepting
+     * Scriptable `this` object as first parameter. Unlike with `defineProperty(String name,
+     * Supplier<Object> getter, Consumer<Object> setter, int attributes)` where getter and setter
+     * need to have access to target object instance, this allows for defining properties on
+     * LambdaConstructor prototype providing getter and setter logic with java instance methods. If
+     * a property with the same name already exists, then it will be replaced. This property will
+     * appear to the JavaScript user exactly like descriptor with a getter and setter, just as if
+     * they had been defined in JavaScript using Object.defineOwnProperty.
+     *
+     * @param name the name of the property
+     * @param getter a function that given Scriptable `this` returns the value of the property. If
+     *     null, throws typeError
+     * @param setter a function that Scriptable `this` and a value sets the value of the property,
+     *     by calling appropriate method on `this`. If null, then the value will be set directly and
+     *     may not be retrieved by the getter.
+     * @param attributes the attributes to set on the property
+     */
+    public void defineProperty(
+            Context cx,
+            String name,
+            java.util.function.Function<Scriptable, Object> getter,
+            BiConsumer<Scriptable, Object> setter,
+            int attributes) {
+        if (getter == null && setter == null)
+            throw ScriptRuntime.typeError("at least one of {getter, setter} is required");
+
+        slotMap.compute(
+                name,
+                0,
+                (id, index, existing) ->
+                        ensureLambdaAccessorSlot(
+                                cx, id, index, existing, getter, setter, attributes));
+    }
+
+    private LambdaAccessorSlot createLambdaAccessorSlot(
+            Object name,
+            int index,
+            Slot existing,
+            java.util.function.Function<Scriptable, Object> getter,
+            BiConsumer<Scriptable, Object> setter,
+            int attributes) {
+        LambdaAccessorSlot slot;
+        if (existing == null) {
+            slot = new LambdaAccessorSlot(name, index);
+        } else if (existing instanceof LambdaAccessorSlot) {
+            slot = (LambdaAccessorSlot) existing;
+        } else {
+            slot = new LambdaAccessorSlot(existing);
+        }
+
+        slot.setGetter(this, getter);
+        slot.setSetter(this, setter);
+        slot.setAttributes(attributes);
+        return slot;
     }
 
     protected void checkPropertyDefinition(ScriptableObject desc) {
@@ -2334,7 +2403,7 @@ public abstract class ScriptableObject
             return ScriptRuntime.emptyArgs;
         }
         Object[] result = obj.getIds();
-        ObjToIntMap map = null;
+        HashSet<Object> map = null;
         for (; ; ) {
             obj = obj.getPrototype();
             if (obj == null) {
@@ -2349,18 +2418,18 @@ public abstract class ScriptableObject
                     result = ids;
                     continue;
                 }
-                map = new ObjToIntMap(result.length + ids.length);
+                map = new HashSet<>();
                 for (int i = 0; i != result.length; ++i) {
-                    map.intern(result[i]);
+                    map.add(result[i]);
                 }
                 result = null; // Allow to GC the result
             }
             for (int i = 0; i != ids.length; ++i) {
-                map.intern(ids[i]);
+                map.add(ids[i]);
             }
         }
         if (map != null) {
-            result = map.getKeys();
+            result = map.toArray();
         }
         return result;
     }
@@ -2692,6 +2761,33 @@ public abstract class ScriptableObject
             return (LambdaSlot) existing;
         } else {
             return new LambdaSlot(existing);
+        }
+    }
+
+    private LambdaAccessorSlot ensureLambdaAccessorSlot(
+            Context cx,
+            Object name,
+            int index,
+            Slot existing,
+            java.util.function.Function<Scriptable, Object> getter,
+            BiConsumer<Scriptable, Object> setter,
+            int attributes) {
+        var newSlot = createLambdaAccessorSlot(name, index, existing, getter, setter, attributes);
+        var newDesc = newSlot.getPropertyDescriptor(cx, this);
+        checkPropertyDefinition(newDesc);
+
+        if (existing == null) {
+            checkPropertyChange(name, null, newDesc);
+            return newSlot;
+        } else if (existing instanceof LambdaAccessorSlot) {
+            var slot = (LambdaAccessorSlot) existing;
+            var existingDesc = slot.getPropertyDescriptor(cx, this);
+            checkPropertyChange(name, existingDesc, newDesc);
+            return newSlot;
+        } else {
+            var existingDesc = existing.getPropertyDescriptor(cx, this);
+            checkPropertyChange(name, existingDesc, newDesc);
+            return newSlot;
         }
     }
 

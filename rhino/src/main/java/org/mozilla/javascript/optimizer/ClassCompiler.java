@@ -6,10 +6,10 @@
 
 package org.mozilla.javascript.optimizer;
 
+import java.util.HashMap;
 import org.mozilla.javascript.CompilerEnvirons;
 import org.mozilla.javascript.IRFactory;
 import org.mozilla.javascript.JavaAdapter;
-import org.mozilla.javascript.ObjToIntMap;
 import org.mozilla.javascript.Parser;
 import org.mozilla.javascript.ScriptRuntime;
 import org.mozilla.javascript.ast.AstRoot;
@@ -37,7 +37,7 @@ public class ClassCompiler {
      * Set the class name to use for main method implementation. The class must have a method
      * matching <code>public static void main(Script sc, String[] args)</code>, it will be called
      * when <code>main(String[] args)</code> is called in the generated class. The class name should
-     * be fully qulified name and include the package name like in <code>org.foo.Bar</code>.
+     * be fully qualified name and include the package name like in <code>org.foo.Bar</code>.
      */
     public void setMainMethodClass(String className) {
         // XXX Should this check for a valid class name?
@@ -143,7 +143,7 @@ public class ClassCompiler {
             return new Object[] {scriptClassName, scriptClassBytes};
         }
         int functionCount = tree.getFunctionCount();
-        ObjToIntMap functionNames = new ObjToIntMap(functionCount);
+        HashMap<String, Integer> functionNames = new HashMap<>();
         for (int i = 0; i != functionCount; ++i) {
             FunctionNode ofn = tree.getFunctionNode(i);
             String name = ofn.getName();

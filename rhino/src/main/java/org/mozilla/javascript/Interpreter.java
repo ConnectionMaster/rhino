@@ -14,6 +14,7 @@ import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import org.mozilla.javascript.ScriptRuntime.NoSuchMethodShim;
@@ -722,7 +723,7 @@ public final class Interpreter extends Icode implements Evaluator {
                     out.println(tname + " " + indexReg);
                     ++pc;
                     break;
-                    // TODO: Icode_REG_STR_C0-3 is not dump. I made this the same it.
+                // TODO: Icode_REG_STR_C0-3 is not dump. I made this the same it.
                 case Icode_REG_BIGINT_C0:
                 case Icode_REG_BIGINT_C1:
                 case Icode_REG_BIGINT_C2:
@@ -869,7 +870,7 @@ public final class Interpreter extends Icode implements Evaluator {
     }
 
     static int[] getLineNumbers(InterpreterData data) {
-        UintMap presentLines = new UintMap();
+        HashSet<Integer> presentLines = new HashSet<>();
 
         byte[] iCode = data.itsICode;
         int iCodeLength = iCode.length;
@@ -879,12 +880,17 @@ public final class Interpreter extends Icode implements Evaluator {
             if (bytecode == Icode_LINE) {
                 if (span != 3) Kit.codeBug();
                 int line = getIndex(iCode, pc + 1);
-                presentLines.put(line, 0);
+                presentLines.add(line);
             }
             pc += span;
         }
 
-        return presentLines.getKeys();
+        int[] ret = new int[presentLines.size()];
+        int i = 0;
+        for (int num : presentLines) {
+            ret[i++] = num;
+        }
+        return ret;
     }
 
     @Override
@@ -1282,7 +1288,7 @@ public final class Interpreter extends Icode implements Evaluator {
                                     }
                                     // We are now resuming execution. Fall through to YIELD case.
                                 }
-                                // fall through...
+                            // fall through...
                             case Token.YIELD:
                             case Icode_YIELD_STAR:
                                 {
@@ -1592,6 +1598,16 @@ public final class Interpreter extends Icode implements Evaluator {
                                                     lhs, stringReg, cx, frame.scope);
                                     continue Loop;
                                 }
+                            case Token.GETPROP_OPTIONAL:
+                                {
+                                    Object lhs = stack[stackTop];
+                                    if (lhs == DBL_MRK)
+                                        lhs = ScriptRuntime.wrapNumber(sDbl[stackTop]);
+                                    stack[stackTop] =
+                                            ScriptRuntime.getObjectPropOptional(
+                                                    lhs, stringReg, cx, frame.scope);
+                                    continue Loop;
+                                }
                             case Token.SETPROP:
                                 {
                                     Object rhs = stack[stackTop];
@@ -1688,6 +1704,19 @@ public final class Interpreter extends Icode implements Evaluator {
                                 ++stackTop;
                                 stack[stackTop] = ScriptRuntime.lastStoredScriptable(cx);
                                 continue Loop;
+                            case Icode_PROP_AND_THIS_OPTIONAL:
+                                {
+                                    Object obj = stack[stackTop];
+                                    if (obj == DBL_MRK)
+                                        obj = ScriptRuntime.wrapNumber(sDbl[stackTop]);
+                                    // stringReg: property
+                                    stack[stackTop] =
+                                            ScriptRuntime.getPropFunctionAndThisOptional(
+                                                    obj, stringReg, cx, frame.scope);
+                                    ++stackTop;
+                                    stack[stackTop] = ScriptRuntime.lastStoredScriptable(cx);
+                                    continue Loop;
+                                }
                             case Icode_PROP_AND_THIS:
                                 {
                                     Object obj = stack[stackTop];
@@ -1738,6 +1767,7 @@ public final class Interpreter extends Icode implements Evaluator {
                                     continue Loop;
                                 }
                             case Token.CALL:
+                            case Token.CALL_OPTIONAL:
                             case Icode_TAIL_CALL:
                             case Token.REF_CALL:
                                 {
@@ -1778,6 +1808,8 @@ public final class Interpreter extends Icode implements Evaluator {
                                             ArrowFunction afun = (ArrowFunction) fun;
                                             fun = afun.getTargetFunction();
                                             funThisObj = afun.getCallThis(cx);
+                                        } else if (fun instanceof LambdaConstructor) {
+                                            break;
                                         } else if (fun instanceof LambdaFunction) {
                                             fun = ((LambdaFunction) fun).getTarget();
                                         } else if (fun instanceof BoundFunction) {
@@ -2027,10 +2059,10 @@ public final class Interpreter extends Icode implements Evaluator {
                                             lhs = ScriptRuntime.wrapNumber(sDbl[stackTop]);
                                         throw ScriptRuntime.notFunctionError(lhs);
                                     }
-                                    Function fun = (Function) lhs;
+                                    Constructable ctor = (Constructable) lhs;
 
-                                    if (fun instanceof IdFunctionObject) {
-                                        IdFunctionObject ifun = (IdFunctionObject) fun;
+                                    if (ctor instanceof IdFunctionObject) {
+                                        IdFunctionObject ifun = (IdFunctionObject) ctor;
                                         if (NativeContinuation.isContinuationConstructor(ifun)) {
                                             frame.stack[stackTop] =
                                                     captureContinuation(
@@ -2041,7 +2073,7 @@ public final class Interpreter extends Icode implements Evaluator {
 
                                     Object[] outArgs =
                                             getArgsArray(stack, sDbl, stackTop + 1, indexReg);
-                                    stack[stackTop] = fun.construct(cx, frame.scope, outArgs);
+                                    stack[stackTop] = ctor.construct(cx, frame.scope, outArgs);
                                     continue Loop;
                                 }
                             case Token.TYPEOF:
@@ -2090,7 +2122,7 @@ public final class Interpreter extends Icode implements Evaluator {
                                 continue Loop;
                             case Icode_SETCONSTVAR1:
                                 indexReg = iCode[frame.pc++];
-                                // fallthrough
+                            // fallthrough
                             case Token.SETCONSTVAR:
                                 stackTop =
                                         doSetConstVar(
@@ -2105,7 +2137,7 @@ public final class Interpreter extends Icode implements Evaluator {
                                 continue Loop;
                             case Icode_SETVAR1:
                                 indexReg = iCode[frame.pc++];
-                                // fallthrough
+                            // fallthrough
                             case Token.SETVAR:
                                 stackTop =
                                         doSetVar(
@@ -2120,7 +2152,7 @@ public final class Interpreter extends Icode implements Evaluator {
                                 continue Loop;
                             case Icode_GETVAR1:
                                 indexReg = iCode[frame.pc++];
-                                // fallthrough
+                            // fallthrough
                             case Token.GETVAR:
                                 stackTop =
                                         doGetVar(
@@ -2144,13 +2176,11 @@ public final class Interpreter extends Icode implements Evaluator {
                                 }
                             case Icode_ZERO:
                                 ++stackTop;
-                                stack[stackTop] = DBL_MRK;
-                                sDbl[stackTop] = 0;
+                                stack[stackTop] = Integer.valueOf(0);
                                 continue Loop;
                             case Icode_ONE:
                                 ++stackTop;
-                                stack[stackTop] = DBL_MRK;
-                                sDbl[stackTop] = 1;
+                                stack[stackTop] = Integer.valueOf(1);
                                 continue Loop;
                             case Token.NULL:
                                 stack[++stackTop] = null;
@@ -2251,6 +2281,17 @@ public final class Interpreter extends Icode implements Evaluator {
                                         obj = ScriptRuntime.wrapNumber(sDbl[stackTop]);
                                     stack[stackTop] =
                                             ScriptRuntime.specialRef(
+                                                    obj, stringReg, cx, frame.scope);
+                                    continue Loop;
+                                }
+                            case Token.REF_SPECIAL_OPTIONAL:
+                                {
+                                    // stringReg: name of special property
+                                    Object obj = stack[stackTop];
+                                    if (obj == DBL_MRK)
+                                        obj = ScriptRuntime.wrapNumber(sDbl[stackTop]);
+                                    stack[stackTop] =
+                                            ScriptRuntime.optionalSpecialRef(
                                                     obj, stringReg, cx, frame.scope);
                                     continue Loop;
                                 }
@@ -2566,7 +2607,7 @@ public final class Interpreter extends Icode implements Evaluator {
                         // -1 accounts for pc pointing to jump opcode + 1
                         frame.pc += offset - 1;
                     } else {
-                        frame.pc = frame.idata.longJumps.getExistingInt(frame.pc);
+                        frame.pc = frame.idata.longJumps.get(frame.pc);
                     }
                     if (instructionCounting) {
                         frame.pcPrevBranch = frame.pc;
@@ -3264,7 +3305,7 @@ public final class Interpreter extends Icode implements Evaluator {
             // Continuation jump is almost done: capturedFrame
             // points to the call to the function that captured
             // continuation, so clone capturedFrame and
-            // emulate return that function with the suplied result
+            // emulate return that function with the supplied result
             frame = cjump.capturedFrame.cloneFrozen();
             setCallResult(frame, cjump.result, cjump.resultDbl);
             // restart the execution

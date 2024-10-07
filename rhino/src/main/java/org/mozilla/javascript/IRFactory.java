@@ -141,6 +141,7 @@ public final class IRFactory {
                 return transformBlock(node);
             case Token.BREAK:
                 return transformBreak((BreakStatement) node);
+            case Token.CALL_OPTIONAL:
             case Token.CALL:
                 return transformFunctionCall((FunctionCall) node);
             case Token.CONTINUE:
@@ -161,6 +162,7 @@ public final class IRFactory {
                 return transformGenExpr((GeneratorExpression) node);
             case Token.GETELEM:
                 return transformElementGet((ElementGet) node);
+            case Token.QUESTION_DOT:
             case Token.GETPROP:
                 return transformPropertyGet((PropertyGet) node);
             case Token.HOOK:
@@ -347,7 +349,8 @@ public final class IRFactory {
         Node call =
                 createCallOrNew(
                         Token.CALL,
-                        createPropertyGet(parser.createName(arrayName), null, "push", 0));
+                        createPropertyGet(
+                                parser.createName(arrayName), null, "push", 0, node.type));
 
         Node body = new Node(Token.EXPR_VOID, call, lineno);
 
@@ -577,6 +580,44 @@ public final class IRFactory {
             ++parser.nestingOfFunction; // only for body, not params
             Node body = transform(fn.getBody());
 
+            /* Process simple default parameters */
+            List<Object> defaultParams = fn.getDefaultParams();
+            if (defaultParams != null) {
+                for (int i = defaultParams.size() - 1; i > 0; ) {
+                    if (defaultParams.get(i) instanceof AstNode
+                            && defaultParams.get(i - 1) instanceof String) {
+                        AstNode rhs = (AstNode) defaultParams.get(i);
+                        String name = (String) defaultParams.get(i - 1);
+                        body.addChildToFront(
+                                createIf(
+                                        createBinary(
+                                                Token.SHEQ,
+                                                parser.createName(name),
+                                                parser.createName("undefined")),
+                                        new Node(
+                                                Token.EXPR_VOID,
+                                                createAssignment(
+                                                        Token.ASSIGN,
+                                                        parser.createName(name),
+                                                        transform(rhs)),
+                                                body.getLineno()),
+                                        null,
+                                        body.getLineno()));
+                    }
+                    i -= 2;
+                }
+            }
+
+            /* transform nodes used as default parameters */
+            List<Node[]> dfns = fn.getDestructuringRvalues();
+            if (dfns != null) {
+                for (var i : dfns) {
+                    Node a = i[0];
+                    AstNode b = (AstNode) i[1];
+                    a.replaceChild(b, transform(b));
+                }
+            }
+
             if (destructuring != null) {
                 body.addChildToFront(new Node(Token.EXPR_VOID, destructuring, lineno));
             }
@@ -603,7 +644,10 @@ public final class IRFactory {
     }
 
     private Node transformFunctionCall(FunctionCall node) {
-        Node call = createCallOrNew(Token.CALL, transform(node.getTarget()));
+        Node call =
+                createCallOrNew(
+                        node.type == Token.CALL_OPTIONAL ? Token.CALL_OPTIONAL : Token.CALL,
+                        transform(node.getTarget()));
         call.setLineno(node.getLineno());
         List<AstNode> args = node.getArguments();
         for (int i = 0; i < args.size(); i++) {
@@ -758,7 +802,35 @@ public final class IRFactory {
     private Node transformInfix(InfixExpression node) {
         Node left = transform(node.getLeft());
         Node right = transform(node.getRight());
-        return createBinary(node.getType(), left, right);
+        return (node.getType() == Token.NULLISH_COALESCING)
+                ? transformNullishCoalescing(left, right, node)
+                : createBinary(node.getType(), left, right);
+    }
+
+    private Node transformNullishCoalescing(Node left, Node right, Node parent) {
+        String tempName = parser.currentScriptOrFn.getNextTempName();
+
+        Node nullNode = new Node(Token.NULL);
+        Node undefinedNode = new Name(0, "undefined");
+
+        Node conditional =
+                new Node(
+                        Token.OR,
+                        new Node(Token.SHEQ, nullNode, parser.createName(tempName)),
+                        new Node(Token.SHEQ, undefinedNode, parser.createName(tempName)));
+
+        Node hookNode =
+                new Node(
+                        Token.HOOK,
+                        /* left= */ conditional,
+                        /* mid= */ right,
+                        /* right= */ parser.createName(tempName));
+
+        parser.defineSymbol(Token.LP, tempName, true);
+        return createBinary(
+                Token.COMMA,
+                createAssignment(Token.ASSIGN, parser.createName(tempName), left),
+                hookNode);
     }
 
     private Node transformLabeledStatement(LabeledStatement ls) {
@@ -831,7 +903,7 @@ public final class IRFactory {
             int size = elems.size(), i = 0;
             properties = new Object[size];
             for (ObjectProperty prop : elems) {
-                Object propKey = getPropKey(prop.getLeft());
+                Object propKey = Parser.getPropKey(prop.getLeft());
                 if (propKey == null) {
                     Node theId = transform(prop.getLeft());
                     properties[i++] = theId;
@@ -854,23 +926,6 @@ public final class IRFactory {
         return object;
     }
 
-    private Object getPropKey(Node id) {
-        Object key;
-        if (id instanceof Name) {
-            String s = ((Name) id).getIdentifier();
-            key = ScriptRuntime.getIndexObject(s);
-        } else if (id instanceof StringLiteral) {
-            String s = ((StringLiteral) id).getValue();
-            key = ScriptRuntime.getIndexObject(s);
-        } else if (id instanceof NumberLiteral) {
-            double n = ((NumberLiteral) id).getNumber();
-            key = ScriptRuntime.getIndexObject(n);
-        } else {
-            key = null; // Filled later
-        }
-        return key;
-    }
-
     private Node transformParenExpr(ParenthesizedExpression node) {
         AstNode expr = node.getExpression();
         while (expr instanceof ParenthesizedExpression) {
@@ -889,7 +944,7 @@ public final class IRFactory {
     private Node transformPropertyGet(PropertyGet node) {
         Node target = transform(node.getTarget());
         String name = node.getProperty().getIdentifier();
-        return createPropertyGet(target, null, name, 0);
+        return createPropertyGet(target, null, name, 0, node.type);
     }
 
     private Node transformTemplateLiteral(TemplateLiteral node) {
@@ -1063,7 +1118,7 @@ public final class IRFactory {
     private Node transformUnary(UnaryExpression node) {
         int type = node.getType();
         if (type == Token.DEFAULTNAMESPACE) {
-            return transformDefaultXmlNamepace(node);
+            return transformDefaultXmlNamespace(node);
         }
 
         Node child = transform(node.getOperand());
@@ -1105,7 +1160,9 @@ public final class IRFactory {
                 } else {
                     astNodePos.push(var);
                     try {
-                        Node d = parser.createDestructuringAssignment(node.getType(), left, right);
+                        Node d =
+                                parser.createDestructuringAssignment(
+                                        node.getType(), left, right, this::transform);
                         node.addChildToBack(d);
                     } finally {
                         astNodePos.pop();
@@ -1211,13 +1268,13 @@ public final class IRFactory {
         String ns = namespace != null ? namespace.getIdentifier() : null;
         if (node instanceof XmlPropRef) {
             String name = ((XmlPropRef) node).getPropName().getIdentifier();
-            return createPropertyGet(pn, ns, name, memberTypeFlags);
+            return createPropertyGet(pn, ns, name, memberTypeFlags, node.type);
         }
         Node expr = transform(((XmlElemRef) node).getExpression());
         return createElementGet(pn, ns, expr, memberTypeFlags);
     }
 
-    private Node transformDefaultXmlNamepace(UnaryExpression node) {
+    private Node transformDefaultXmlNamespace(UnaryExpression node) {
         Node child = transform(node.getOperand());
         return createUnary(Token.DEFAULTNAMESPACE, child);
     }
@@ -1473,8 +1530,7 @@ public final class IRFactory {
             Node assign;
             if (destructuring != -1) {
                 assign =
-                        parser.createDestructuringAssignment(
-                                declType, lvalue, id, (AstNode node) -> transform(node));
+                        parser.createDestructuringAssignment(declType, lvalue, id, this::transform);
                 if (!isForEach
                         && !isForOf
                         && (destructuring == Token.OBJECTLIT || destructuringLen != 2)) {
@@ -1589,10 +1645,10 @@ public final class IRFactory {
             // after_catch:
             //
             // If there is no default catch, then the last with block
-            // arround  "somethingDefault;" is replaced by "rethrow;"
+            // around  "somethingDefault;" is replaced by "rethrow;"
 
             // It is assumed that catch handler generation will store
-            // exeception object in handlerBlock register
+            // exception object in handlerBlock register
 
             // Block with local for exception scope objects
             Node catchScopeBlock = new Node(Token.LOCAL_BLOCK);
@@ -1847,18 +1903,27 @@ public final class IRFactory {
     }
 
     private Node createPropertyGet(
-            Node target, String namespace, String name, int memberTypeFlags) {
+            Node target, String namespace, String name, int memberTypeFlags, int type) {
         if (namespace == null && memberTypeFlags == 0) {
             if (target == null) {
                 return parser.createName(name);
             }
             parser.checkActivationName(name, Token.GETPROP);
             if (ScriptRuntime.isSpecialProperty(name)) {
-                Node ref = new Node(Token.REF_SPECIAL, target);
+                Node ref =
+                        new Node(
+                                type == Token.QUESTION_DOT
+                                        ? Token.REF_SPECIAL_OPTIONAL
+                                        : Token.REF_SPECIAL,
+                                target);
                 ref.putProp(Node.NAME_PROP, name);
                 return new Node(Token.GET_REF, ref);
             }
-            return new Node(Token.GETPROP, target, Node.newString(name));
+
+            return new Node(
+                    type == Token.QUESTION_DOT ? Token.GETPROP_OPTIONAL : Token.GETPROP,
+                    target,
+                    Node.newString(name));
         }
         Node elem = Node.newString(name);
         memberTypeFlags |= Node.PROPERTY_FLAG;
@@ -1943,7 +2008,7 @@ public final class IRFactory {
                 }
                 // can't do anything if we don't know  both types - since
                 // 0 + object is supposed to call toString on the object and do
-                // string concantenation rather than addition
+                // string concatenation rather than addition
                 break;
 
             case Token.SUB:
@@ -1999,7 +2064,7 @@ public final class IRFactory {
                         return left;
                     } else if (rd == 1.0) {
                         // second 1: x/1 -> +x
-                        // not simply x to force number convertion
+                        // not simply x to force number conversion
                         return new Node(Token.POS, left);
                     }
                 }
@@ -2051,8 +2116,7 @@ public final class IRFactory {
                     parser.reportError("msg.bad.destruct.op");
                     return right;
                 }
-                return parser.createDestructuringAssignment(
-                        -1, left, right, (AstNode node) -> transform(node));
+                return parser.createDestructuringAssignment(-1, left, right, this::transform);
             }
             parser.reportError("msg.bad.assign.left");
             return right;
@@ -2066,11 +2130,17 @@ public final class IRFactory {
             case Token.ASSIGN_BITOR:
                 assignOp = Token.BITOR;
                 break;
+            case Token.ASSIGN_LOGICAL_OR:
+                assignOp = Token.OR;
+                break;
             case Token.ASSIGN_BITXOR:
                 assignOp = Token.BITXOR;
                 break;
             case Token.ASSIGN_BITAND:
                 assignOp = Token.BITAND;
+                break;
+            case Token.ASSIGN_LOGICAL_AND:
+                assignOp = Token.AND;
                 break;
             case Token.ASSIGN_LSH:
                 assignOp = Token.LSH;

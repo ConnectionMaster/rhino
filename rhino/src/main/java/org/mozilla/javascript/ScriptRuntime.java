@@ -13,6 +13,7 @@ import java.math.BigInteger;
 import java.math.MathContext;
 import java.text.MessageFormat;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.ResourceBundle;
@@ -435,15 +436,10 @@ public class ScriptRuntime {
             if (val instanceof String) return toNumber((String) val);
             if (val instanceof CharSequence) return toNumber(val.toString());
             if (val instanceof Boolean) return ((Boolean) val).booleanValue() ? 1 : +0.0;
-            if (val instanceof Symbol) throw typeErrorById("msg.not.a.number");
-            if (val instanceof Scriptable) {
-                val = ((Scriptable) val).getDefaultValue(NumberClass);
-                if ((val instanceof Scriptable) && !isSymbol(val))
-                    throw errorWithClassName("msg.primitive.expected", val);
-                continue;
-            }
-            warnAboutNonJSObject(val);
-            return NaN;
+            if (isSymbol(val)) throw typeErrorById("msg.not.a.number");
+            // Assert: val is an Object
+            val = toPrimitive(val, NumberClass);
+            // Assert: val is a primitive
         }
     }
 
@@ -457,7 +453,7 @@ public class ScriptRuntime {
     // Preserve backward-compatibility with historical value of this.
     public static final double negativeZero = Double.longBitsToDouble(0x8000000000000000L);
 
-    public static final Double zeroObj = Double.valueOf(0.0);
+    public static final Integer zeroObj = Integer.valueOf(0);
     public static final Double negativeZeroObj = Double.valueOf(-0.0);
 
     static double stringPrefixToNumber(String s, int start, int radix) {
@@ -576,7 +572,7 @@ public class ScriptRuntime {
                             if (bit) {
                                 state = MIXED_AFTER_54;
                             }
-                            // fallthrough
+                        // fallthrough
                         case MIXED_AFTER_54:
                             factor *= 2;
                             break;
@@ -712,56 +708,45 @@ public class ScriptRuntime {
 
     /** Convert the value to a BigInt. */
     public static BigInteger toBigInt(Object val) {
-        for (; ; ) {
-            if (val instanceof BigInteger) {
-                return (BigInteger) val;
-            }
-            if (val instanceof BigDecimal) {
-                return ((BigDecimal) val).toBigInteger();
-            }
-            if (val instanceof Number) {
-                if (val instanceof Long) {
-                    return BigInteger.valueOf(((Long) val));
-                } else {
-                    double d = ((Number) val).doubleValue();
-                    if (Double.isNaN(d) || Double.isInfinite(d)) {
-                        throw rangeErrorById(
-                                "msg.cant.convert.to.bigint.isnt.integer", toString(val));
-                    }
-                    BigDecimal bd = new BigDecimal(d, MathContext.UNLIMITED);
-                    try {
-                        return bd.toBigIntegerExact();
-                    } catch (ArithmeticException e) {
-                        throw rangeErrorById(
-                                "msg.cant.convert.to.bigint.isnt.integer", toString(val));
-                    }
-                }
-            }
-            if (val == null || Undefined.isUndefined(val)) {
-                throw typeErrorById("msg.cant.convert.to.bigint", toString(val));
-            }
-            if (val instanceof String) {
-                return toBigInt((String) val);
-            }
-            if (val instanceof CharSequence) {
-                return toBigInt(val.toString());
-            }
-            if (val instanceof Boolean) {
-                return ((Boolean) val).booleanValue() ? BigInteger.ONE : BigInteger.ZERO;
-            }
-            if (val instanceof Symbol) {
-                throw typeErrorById("msg.cant.convert.to.bigint", toString(val));
-            }
-            if (val instanceof Scriptable) {
-                val = ((Scriptable) val).getDefaultValue(BigIntegerClass);
-                if ((val instanceof Scriptable) && !isSymbol(val)) {
-                    throw errorWithClassName("msg.primitive.expected", val);
-                }
-                continue;
-            }
-            warnAboutNonJSObject(val);
-            return BigInteger.ZERO;
+        val = toPrimitive(val, NumberClass);
+        if (val instanceof BigInteger) {
+            return (BigInteger) val;
         }
+        if (val instanceof BigDecimal) {
+            return ((BigDecimal) val).toBigInteger();
+        }
+        if (val instanceof Number) {
+            if (val instanceof Long) {
+                return BigInteger.valueOf(((Long) val));
+            } else {
+                double d = ((Number) val).doubleValue();
+                if (Double.isNaN(d) || Double.isInfinite(d)) {
+                    throw rangeErrorById("msg.cant.convert.to.bigint.isnt.integer", toString(val));
+                }
+                BigDecimal bd = new BigDecimal(d, MathContext.UNLIMITED);
+                try {
+                    return bd.toBigIntegerExact();
+                } catch (ArithmeticException e) {
+                    throw rangeErrorById("msg.cant.convert.to.bigint.isnt.integer", toString(val));
+                }
+            }
+        }
+        if (val == null || Undefined.isUndefined(val)) {
+            throw typeErrorById("msg.cant.convert.to.bigint", toString(val));
+        }
+        if (val instanceof String) {
+            return toBigInt((String) val);
+        }
+        if (val instanceof CharSequence) {
+            return toBigInt(val.toString());
+        }
+        if (val instanceof Boolean) {
+            return ((Boolean) val).booleanValue() ? BigInteger.ONE : BigInteger.ZERO;
+        }
+        if (isSymbol(val)) {
+            throw typeErrorById("msg.cant.convert.to.bigint", toString(val));
+        }
+        throw errorWithClassName("msg.primitive.expected", val);
     }
 
     /** ToBigInt applied to the String type */
@@ -840,6 +825,7 @@ public class ScriptRuntime {
      * <p>See ECMA 7.1.3 (v11.0).
      */
     public static Number toNumeric(Object val) {
+        val = toPrimitive(val, NumberClass);
         if (val instanceof Number) {
             return (Number) val;
         }
@@ -1026,31 +1012,37 @@ public class ScriptRuntime {
                 return val.toString();
             }
             if (val instanceof BigInteger) {
-                return val.toString();
+                return ((BigInteger) val).toString(10);
             }
             if (val instanceof Number) {
                 // XXX should we just teach NativeNumber.stringValue()
                 // about Numbers?
                 return numberToString(((Number) val).doubleValue(), 10);
             }
-            if (val instanceof Symbol) {
+            if (val instanceof Boolean) {
+                return val.toString();
+            }
+            if (isSymbol(val)) {
                 throw typeErrorById("msg.not.a.string");
             }
-            if (val instanceof Scriptable) {
-                val = ((Scriptable) val).getDefaultValue(StringClass);
-                if ((val instanceof Scriptable) && !isSymbol(val)) {
-                    throw errorWithClassName("msg.primitive.expected", val);
-                }
-                continue;
-            }
-            return val.toString();
+            // Assert: val is an Object
+            val = toPrimitive(val, StringClass);
+            // Assert: val is a primitive
         }
     }
 
     static String defaultObjectToString(Scriptable obj) {
         if (obj == null) return "[object Null]";
         if (Undefined.isUndefined(obj)) return "[object Undefined]";
-        return "[object " + obj.getClassName() + ']';
+
+        Object tagValue = ScriptableObject.getProperty(obj, SymbolKey.TO_STRING_TAG);
+        // Note: Scriptable.NOT_FOUND is not a CharSequence, so we don't need to explicitly check
+        // for it
+        if (tagValue instanceof CharSequence) {
+            return "[object " + tagValue + "]";
+        }
+
+        return "[object " + obj.getClassName() + "]";
     }
 
     public static String toString(Object[] args, int index) {
@@ -1142,10 +1134,10 @@ public class ScriptRuntime {
         if (cx.iterating == null) {
             toplevel = true;
             iterating = false;
-            cx.iterating = new ObjToIntMap(31);
+            cx.iterating = new HashSet<>();
         } else {
             toplevel = false;
-            iterating = cx.iterating.has(thisObj);
+            iterating = cx.iterating.contains(thisObj);
         }
 
         StringBuilder result = new StringBuilder(128);
@@ -1158,7 +1150,7 @@ public class ScriptRuntime {
         // so we don't leak memory
         try {
             if (!iterating) {
-                cx.iterating.intern(thisObj); // stop recursion.
+                cx.iterating.add(thisObj); // stop recursion.
                 Object[] ids = thisObj.getIds();
                 for (int i = 0; i < ids.length; i++) {
                     Object id = ids[i];
@@ -1222,7 +1214,9 @@ public class ScriptRuntime {
         return null;
     }
 
-    /** @param scope the scope that should be used to resolve primitive prototype */
+    /**
+     * @param scope the scope that should be used to resolve primitive prototype
+     */
     public static Scriptable toObjectOrNull(Context cx, Object obj, Scriptable scope) {
         if (obj instanceof Scriptable) {
             return (Scriptable) obj;
@@ -1232,7 +1226,9 @@ public class ScriptRuntime {
         return null;
     }
 
-    /** @deprecated Use {@link #toObject(Scriptable, Object)} instead. */
+    /**
+     * @deprecated Use {@link #toObject(Scriptable, Object)} instead.
+     */
     @Deprecated
     public static Scriptable toObject(Scriptable scope, Object val, Class<?> staticClass) {
         if (val instanceof Scriptable) {
@@ -1296,14 +1292,18 @@ public class ScriptRuntime {
         throw errorWithClassName("msg.invalid.type", val);
     }
 
-    /** @deprecated Use {@link #toObject(Context, Scriptable, Object)} instead. */
+    /**
+     * @deprecated Use {@link #toObject(Context, Scriptable, Object)} instead.
+     */
     @Deprecated
     public static Scriptable toObject(
             Context cx, Scriptable scope, Object val, Class<?> staticClass) {
         return toObject(cx, scope, val);
     }
 
-    /** @deprecated The method is only present for compatibility. */
+    /**
+     * @deprecated The method is only present for compatibility.
+     */
     @Deprecated
     public static Object call(
             Context cx, Object fun, Object thisArg, Object[] args, Scriptable scope) {
@@ -1321,7 +1321,7 @@ public class ScriptRuntime {
     public static Scriptable newObject(
             Context cx, Scriptable scope, String constructorName, Object[] args) {
         scope = ScriptableObject.getTopLevelScope(scope);
-        Function ctor = getExistingCtor(cx, scope, constructorName);
+        Constructable ctor = getExistingCtor(cx, scope, constructorName);
         if (args == null) {
             args = ScriptRuntime.emptyArgs;
         }
@@ -1331,7 +1331,7 @@ public class ScriptRuntime {
     public static Scriptable newBuiltinObject(
             Context cx, Scriptable scope, TopLevel.Builtins type, Object[] args) {
         scope = ScriptableObject.getTopLevelScope(scope);
-        Function ctor = TopLevel.getBuiltinCtor(cx, scope, type);
+        Constructable ctor = TopLevel.getBuiltinCtor(cx, scope, type);
         if (args == null) {
             args = ScriptRuntime.emptyArgs;
         }
@@ -1341,7 +1341,7 @@ public class ScriptRuntime {
     static Scriptable newNativeError(
             Context cx, Scriptable scope, TopLevel.NativeErrors type, Object[] args) {
         scope = ScriptableObject.getTopLevelScope(scope);
-        Function ctor = TopLevel.getNativeErrorCtor(cx, scope, type);
+        Constructable ctor = TopLevel.getNativeErrorCtor(cx, scope, type);
         if (args == null) {
             args = ScriptRuntime.emptyArgs;
         }
@@ -1617,7 +1617,7 @@ public class ScriptRuntime {
      * Helper to return a string or an integer. Always use a null check on s.stringId to determine
      * if the result is string or integer.
      *
-     * @see ScriptRuntime#toStringIdOrIndex(Context, Object)
+     * @see ScriptRuntime#toStringIdOrIndex(Object)
      */
     public static final class StringIdOrIndex {
         final String stringId;
@@ -1738,6 +1738,22 @@ public class ScriptRuntime {
         return getObjectProp(sobj, property, cx);
     }
 
+    public static Object getObjectPropOptional(
+            Object obj, String property, Context cx, Scriptable scope) {
+        if (obj == null || Undefined.isUndefined(obj)) {
+            return Undefined.instance;
+        }
+        return getObjectProp(obj, property, cx, scope);
+    }
+
+    public static Object getObjectPropOptional(
+            Scriptable obj, String property, Context cx, Scriptable scope) {
+        if (obj == null || Undefined.isUndefined(obj)) {
+            return Undefined.instance;
+        }
+        return getObjectProp(obj, property, cx);
+    }
+
     public static Object getObjectProp(Scriptable obj, String property, Context cx) {
 
         Object result = ScriptableObject.getProperty(obj, property);
@@ -1752,7 +1768,9 @@ public class ScriptRuntime {
         return result;
     }
 
-    /** @deprecated Use {@link #getObjectPropNoWarn(Object, String, Context, Scriptable)} instead */
+    /**
+     * @deprecated Use {@link #getObjectPropNoWarn(Object, String, Context, Scriptable)} instead
+     */
     @Deprecated
     public static Object getObjectPropNoWarn(Object obj, String property, Context cx) {
         return getObjectPropNoWarn(obj, property, cx, getTopCallScope(cx));
@@ -1942,7 +1960,9 @@ public class ScriptRuntime {
         return ref.get(cx);
     }
 
-    /** @deprecated Use {@link #refSet(Ref, Object, Context, Scriptable)} instead */
+    /**
+     * @deprecated Use {@link #refSet(Ref, Object, Context, Scriptable)} instead
+     */
     @Deprecated
     public static Object refSet(Ref ref, Object value, Context cx) {
         return refSet(ref, value, cx, getTopCallScope(cx));
@@ -1960,7 +1980,9 @@ public class ScriptRuntime {
         return s.equals("__proto__") || s.equals("__parent__");
     }
 
-    /** @deprecated Use {@link #specialRef(Object, String, Context, Scriptable)} instead */
+    /**
+     * @deprecated Use {@link #specialRef(Object, String, Context, Scriptable)} instead
+     */
     @Deprecated
     public static Ref specialRef(Object obj, String specialProperty, Context cx) {
         return specialRef(obj, specialProperty, cx, getTopCallScope(cx));
@@ -1970,7 +1992,14 @@ public class ScriptRuntime {
         return SpecialRef.createSpecial(cx, scope, obj, specialProperty);
     }
 
-    /** @deprecated Use {@link #delete(Object, Object, Context, Scriptable, boolean)} instead */
+    public static Ref optionalSpecialRef(
+            Object obj, String specialProperty, Context cx, Scriptable scope) {
+        return SpecialOptionalRef.create(cx, scope, obj, specialProperty);
+    }
+
+    /**
+     * @deprecated Use {@link #delete(Object, Object, Context, Scriptable, boolean)} instead
+     */
     @Deprecated
     public static Object delete(Object obj, Object id, Context cx) {
         return delete(obj, id, cx, false);
@@ -2247,7 +2276,7 @@ public class ScriptRuntime {
         private static final long serialVersionUID = 1L;
         Scriptable obj;
         Object[] ids;
-        ObjToIntMap used;
+        HashSet<Object> used;
         Object currentId;
         int index;
         int enumType; /* one of ENUM_INIT_KEYS, ENUM_INIT_VALUES,
@@ -2295,7 +2324,9 @@ public class ScriptRuntime {
     public static final int ENUMERATE_ARRAY_NO_ITERATOR = 5;
     public static final int ENUMERATE_VALUES_IN_ORDER = 6;
 
-    /** @deprecated Use {@link #enumInit(Object, Context, Scriptable, int)} instead */
+    /**
+     * @deprecated Use {@link #enumInit(Object, Context, Scriptable, int)} instead
+     */
     @Deprecated
     public static Object enumInit(Object value, Context cx, int enumType) {
         return enumInit(value, cx, getTopCallScope(cx), enumType);
@@ -2361,7 +2392,9 @@ public class ScriptRuntime {
         ((IdEnumeration) enumObj).enumNumbers = enumNumbers;
     }
 
-    /** @deprecated since 1.7.15. Use {@link #enumNext(Context, Object)} instead */
+    /**
+     * @deprecated since 1.7.15. Use {@link #enumNext(Object, Context)} instead
+     */
     @Deprecated
     public static Boolean enumNext(Object enumObj) {
         return enumNext(enumObj, Context.getContext());
@@ -2396,7 +2429,7 @@ public class ScriptRuntime {
                 continue;
             }
             Object id = x.ids[x.index++];
-            if (x.used != null && x.used.has(id)) {
+            if (x.used != null && x.used.contains(id)) {
                 continue;
             }
             if (id instanceof Symbol) {
@@ -2486,10 +2519,10 @@ public class ScriptRuntime {
             Object[] previous = x.ids;
             int L = previous.length;
             if (x.used == null) {
-                x.used = new ObjToIntMap(L);
+                x.used = new HashSet<>();
             }
             for (int i = 0; i != L; ++i) {
-                x.used.intern(previous[i]);
+                x.used.add(previous[i]);
             }
         }
         x.ids = ids;
@@ -2614,6 +2647,20 @@ public class ScriptRuntime {
 
         storeScriptable(cx, thisObj);
         return (Callable) value;
+    }
+
+    public static Callable getPropFunctionAndThisOptional(
+            Object obj, String property, Context cx, Scriptable scope) {
+
+        Scriptable thisObj = toObjectOrNull(cx, obj, scope);
+        if (thisObj == null) {
+            throw undefCallError(obj, property);
+        }
+
+        Object value = ScriptableObject.getProperty(thisObj, property);
+        if (Scriptable.NOT_FOUND == value || Undefined.isUndefined(value) || value == null)
+            return (cx1, scope1, thisObj2, args) -> Undefined.instance;
+        return getPropFunctionAndThisHelper(obj, property, cx, thisObj);
     }
 
     /**
@@ -2747,11 +2794,10 @@ public class ScriptRuntime {
      * <p>See ECMA 11.2.2
      */
     public static Scriptable newObject(Object fun, Context cx, Scriptable scope, Object[] args) {
-        if (!(fun instanceof Function)) {
+        if (!(fun instanceof Constructable)) {
             throw notFunctionError(fun);
         }
-        Function function = (Function) fun;
-        return function.construct(cx, scope, args);
+        return ((Constructable) fun).construct(cx, scope, args);
     }
 
     public static Object callSpecial(
@@ -2844,7 +2890,9 @@ public class ScriptRuntime {
         return callThis;
     }
 
-    /** @return true if the passed in Scriptable looks like an array */
+    /**
+     * @return true if the passed in Scriptable looks like an array
+     */
     private static boolean isArrayLike(Scriptable obj) {
         return obj != null
                 && (obj instanceof NativeArray
@@ -2990,6 +3038,9 @@ public class ScriptRuntime {
                 || (val1 instanceof BigInteger && val2 instanceof Number)) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
         }
+        if (val1 instanceof Integer && val2 instanceof Integer) {
+            return add((Integer) val1, (Integer) val2);
+        }
         if (val1 instanceof Number && val2 instanceof Number) {
             return wrapNumber(((Number) val1).doubleValue() + ((Number) val2).doubleValue());
         }
@@ -3063,6 +3114,8 @@ public class ScriptRuntime {
             return ((BigInteger) val1).subtract((BigInteger) val2);
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return subtract((Integer) val1, (Integer) val2);
         } else {
             return val1.doubleValue() - val2.doubleValue();
         }
@@ -3073,6 +3126,8 @@ public class ScriptRuntime {
             return ((BigInteger) val1).multiply((BigInteger) val2);
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return multiply((Integer) val1, (Integer) val2);
         } else {
             return val1.doubleValue() * val2.doubleValue();
         }
@@ -3087,6 +3142,8 @@ public class ScriptRuntime {
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
         } else {
+            // Do not try to optimize for the integer case because JS doesn't
+            // have an integer type.
             return val1.doubleValue() / val2.doubleValue();
         }
     }
@@ -3100,10 +3157,42 @@ public class ScriptRuntime {
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
         } else {
+            // Do not try an integer-specific optimization because we need to get
+            // both +0 and -0 right.
             return val1.doubleValue() % val2.doubleValue();
         }
     }
 
+    // Integer-optimized methods.
+
+    public static Object add(Integer i1, Integer i2) {
+        // Try to add integers for efficiency, but account for overflow
+        long r = (long) i1.intValue() + (long) i2.intValue();
+        if ((r >= Integer.MIN_VALUE) && (r <= Integer.MAX_VALUE)) {
+            return Integer.valueOf((int) r);
+        }
+        return Double.valueOf((double) r);
+    }
+
+    public static Number subtract(Integer i1, Integer i2) {
+        // Account for overflow
+        long r = (long) i1.intValue() - (long) i2.intValue();
+        if ((r >= Integer.MIN_VALUE) && (r <= Integer.MAX_VALUE)) {
+            return Integer.valueOf((int) r);
+        }
+        return Double.valueOf((double) r);
+    }
+
+    public static Number multiply(Integer i1, Integer i2) {
+        // Aunt for overflow
+        long r = (long) i1.intValue() * (long) i2.intValue();
+        if ((r >= Integer.MIN_VALUE) && (r <= Integer.MAX_VALUE)) {
+            return Integer.valueOf((int) r);
+        }
+        return Double.valueOf((double) r);
+    }
+
+    @SuppressWarnings("AndroidJdkLibsChecker")
     public static Number exponentiate(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             if (((BigInteger) val2).signum() == -1) {
@@ -3129,6 +3218,8 @@ public class ScriptRuntime {
             return ((BigInteger) val1).and((BigInteger) val2);
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return Integer.valueOf(((Integer) val1).intValue() & ((Integer) val2).intValue());
         } else {
             int result = toInt32(val1.doubleValue()) & toInt32(val2.doubleValue());
             return Double.valueOf(result);
@@ -3140,6 +3231,8 @@ public class ScriptRuntime {
             return ((BigInteger) val1).or((BigInteger) val2);
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return Integer.valueOf(((Integer) val1).intValue() | ((Integer) val2).intValue());
         } else {
             int result = toInt32(val1.doubleValue()) | toInt32(val2.doubleValue());
             return Double.valueOf(result);
@@ -3151,12 +3244,15 @@ public class ScriptRuntime {
             return ((BigInteger) val1).xor((BigInteger) val2);
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return Integer.valueOf(((Integer) val1).intValue() ^ ((Integer) val2).intValue());
         } else {
             int result = toInt32(val1.doubleValue()) ^ toInt32(val2.doubleValue());
             return Double.valueOf(result);
         }
     }
 
+    @SuppressWarnings("AndroidJdkLibsChecker")
     public static Number leftShift(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             try {
@@ -3168,12 +3264,15 @@ public class ScriptRuntime {
             }
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return Integer.valueOf(((Integer) val1).intValue() << ((Integer) val2).intValue());
         } else {
             int result = toInt32(val1.doubleValue()) << toInt32(val2.doubleValue());
             return Double.valueOf(result);
         }
     }
 
+    @SuppressWarnings("AndroidJdkLibsChecker")
     public static Number signedRightShift(Number val1, Number val2) {
         if (val1 instanceof BigInteger && val2 instanceof BigInteger) {
             try {
@@ -3185,6 +3284,8 @@ public class ScriptRuntime {
             }
         } else if (val1 instanceof BigInteger || val2 instanceof BigInteger) {
             throw ScriptRuntime.typeErrorById("msg.cant.convert.to.number", "BigInt");
+        } else if (val1 instanceof Integer && val2 instanceof Integer) {
+            return Integer.valueOf(((Integer) val1).intValue() >> ((Integer) val2).intValue());
         } else {
             int result = toInt32(val1.doubleValue()) >> toInt32(val2.doubleValue());
             return Double.valueOf(result);
@@ -3194,6 +3295,8 @@ public class ScriptRuntime {
     public static Number bitwiseNOT(Number val) {
         if (val instanceof BigInteger) {
             return ((BigInteger) val).not();
+        } else if (val instanceof Integer) {
+            return Integer.valueOf(~((Integer) val).intValue());
         } else {
             int result = ~toInt32(val.doubleValue());
             return Double.valueOf(result);
@@ -3239,7 +3342,9 @@ public class ScriptRuntime {
         return doScriptableIncrDecr(target, id, scopeChain, value, incrDecrMask);
     }
 
-    /** @deprecated Use {@link #propIncrDecr(Object, String, Context, Scriptable, int)} instead */
+    /**
+     * @deprecated Use {@link #propIncrDecr(Object, String, Context, Scriptable, int)} instead
+     */
     @Deprecated
     public static Object propIncrDecr(Object obj, String id, Context cx, int incrDecrMask) {
         return propIncrDecr(obj, id, cx, getTopCallScope(cx), incrDecrMask);
@@ -3291,6 +3396,12 @@ public class ScriptRuntime {
             } else {
                 result = ((BigInteger) number).subtract(BigInteger.ONE);
             }
+        } else if (number instanceof Integer) {
+            if ((incrDecrMask & Node.DECR_FLAG) == 0) {
+                result = ((Integer) number).intValue() + 1;
+            } else {
+                result = ((Integer) number).intValue() - 1;
+            }
         } else {
             if ((incrDecrMask & Node.DECR_FLAG) == 0) {
                 result = number.doubleValue() + 1.0;
@@ -3306,7 +3417,9 @@ public class ScriptRuntime {
         return result;
     }
 
-    /** @deprecated Use {@link #elemIncrDecr(Object, Object, Context, Scriptable, int)} instead */
+    /**
+     * @deprecated Use {@link #elemIncrDecr(Object, Object, Context, Scriptable, int)} instead
+     */
     @Deprecated
     public static Object elemIncrDecr(Object obj, Object index, Context cx, int incrDecrMask) {
         return elemIncrDecr(obj, index, cx, getTopCallScope(cx), incrDecrMask);
@@ -3331,6 +3444,12 @@ public class ScriptRuntime {
             } else {
                 result = ((BigInteger) number).subtract(BigInteger.ONE);
             }
+        } else if (number instanceof Integer) {
+            if ((incrDecrMask & Node.DECR_FLAG) == 0) {
+                result = ((Integer) number).intValue() + 1;
+            } else {
+                result = ((Integer) number).intValue() - 1;
+            }
         } else {
             if ((incrDecrMask & Node.DECR_FLAG) == 0) {
                 result = number.doubleValue() + 1.0;
@@ -3346,7 +3465,9 @@ public class ScriptRuntime {
         return result;
     }
 
-    /** @deprecated Use {@link #refIncrDecr(Ref, Context, Scriptable, int)} instead */
+    /**
+     * @deprecated Use {@link #refIncrDecr(Ref, Context, Scriptable, int)} instead
+     */
     @Deprecated
     public static Object refIncrDecr(Ref ref, Context cx, int incrDecrMask) {
         return refIncrDecr(ref, cx, getTopCallScope(cx), incrDecrMask);
@@ -3370,6 +3491,12 @@ public class ScriptRuntime {
             } else {
                 result = ((BigInteger) number).subtract(BigInteger.ONE);
             }
+        } else if (number instanceof Integer) {
+            if ((incrDecrMask & Node.DECR_FLAG) == 0) {
+                result = ((Integer) number).intValue() + 1;
+            } else {
+                result = ((Integer) number).intValue() - 1;
+            }
         } else {
             if ((incrDecrMask & Node.DECR_FLAG) == 0) {
                 result = number.doubleValue() + 1.0;
@@ -3389,19 +3516,92 @@ public class ScriptRuntime {
         if (val instanceof BigInteger) {
             return ((BigInteger) val).negate();
         }
+        if (val instanceof Integer) {
+            int iv = (Integer) val;
+            if (iv == 0) {
+                return negativeZeroObj;
+            }
+            if (iv > Integer.MIN_VALUE && iv < Integer.MAX_VALUE) {
+                // Account for twos-complement representation by not trying
+                // to negate values at the extremes
+                return Integer.valueOf(-((Integer) val).intValue());
+            }
+        }
         return -val.doubleValue();
     }
 
-    public static Object toPrimitive(Object val) {
-        return toPrimitive(val, null);
+    public static Object toPrimitive(Object input) {
+        return toPrimitive(input, null);
     }
 
-    public static Object toPrimitive(Object val, Class<?> typeHint) {
-        if (!(val instanceof Scriptable)) {
-            return val;
+    /**
+     * The abstract operation ToPrimitive takes argument input (an ECMAScript language value) and
+     * optional argument preferredType (string or number) and returns either a normal completion
+     * containing an ECMAScript language value or a throw completion. It converts its input argument
+     * to a non-Object type. If an object is capable of converting to more than one primitive type,
+     * it may use the optional hint preferredType to favour that type.
+     *
+     * @param input
+     * @param preferredType
+     * @return
+     * @see <a href="https://262.ecma-international.org/15.0/index.html#sec-toprimitive"></a>
+     */
+    public static Object toPrimitive(Object input, Class<?> preferredType) {
+        // 1. If input is an Object, then
+        //    a. Let exoticToPrim be ? GetMethod(input, @@toPrimitive).
+        //    b. If exoticToPrim is not undefined, then
+        //        i. If preferredType is not present, then
+        //            1. Let hint be "default".
+        //        ii. Else if preferredType is string, then
+        //            1. Let hint be "string".
+        //        iii. Else,
+        //            1. Assert: preferredType is number.
+        //            2. Let hint be "number".
+        //        iv. Let result be ? Call(exoticToPrim, input, « hint »).
+        //        v.  If result is not an Object, return result.
+        //        vi. Throw a TypeError exception.
+        //    c. If preferredType is not present, let preferredType be number.
+        //    d. Return ? OrdinaryToPrimitive(input, preferredType).
+        // 2. Return input.
+
+        // do not return on Scriptable's here; we like to fall back to our
+        // default impl getDefaultValue() for them
+        if (!(input instanceof Scriptable) && !isObject(input)) {
+            return input;
         }
-        Scriptable s = (Scriptable) val;
-        Object result = s.getDefaultValue(typeHint);
+
+        final Scriptable s = (Scriptable) input;
+        // to be backward compatible: getProperty(Scriptable obj, Symbol key)
+        // throws if obj is not a SymbolScriptable
+        Object exoticToPrim = null;
+        if (s instanceof SymbolScriptable) {
+            exoticToPrim = ScriptableObject.getProperty(s, SymbolKey.TO_PRIMITIVE);
+        }
+        if (exoticToPrim instanceof Function) {
+            final Function func = (Function) exoticToPrim;
+            final Context cx = Context.getCurrentContext();
+            final Scriptable scope = func.getParentScope();
+            final String hint;
+            if (preferredType == null) {
+                hint = "default";
+            } else if (StringClass == preferredType) {
+                hint = "string";
+            } else {
+                hint = "number";
+            }
+            final Object result = func.call(cx, scope, s, new Object[] {hint});
+            if (isObject(result)) {
+                throw typeErrorById("msg.cant.convert.to.primitive");
+            }
+            return result;
+        }
+        if (exoticToPrim != null
+                && exoticToPrim != Scriptable.NOT_FOUND
+                && !Undefined.isUndefined(exoticToPrim)) {
+            throw notFunctionError(exoticToPrim);
+        }
+        final Class<?> defaultValueHint = preferredType == null ? NumberClass : preferredType;
+        final Object result = s.getDefaultValue(defaultValueHint);
         if ((result instanceof Scriptable) && !isSymbol(result))
             throw typeErrorById("msg.bad.default.value");
         return result;
@@ -3444,6 +3644,8 @@ public class ScriptRuntime {
                 }
             }
             return eqNumber(b ? 1.0 : 0.0, y);
+        } else if (isSymbol(x) && isObject(y)) {
+            return eq(x, toPrimitive(y));
         } else if (x instanceof Scriptable) {
             if (x instanceof Delegator) {
                 x = ((Delegator) x).getDelegee();
@@ -3457,7 +3659,9 @@ public class ScriptRuntime {
             if (y instanceof Delegator && ((Delegator) y).getDelegee() == x) {
                 return true;
             }
-
+            if (isSymbol(y) && isObject(x)) {
+                return eq(toPrimitive(x), y);
+            }
             if (y instanceof Scriptable) {
                 if (x instanceof ScriptableObject) {
                     Object test = ((ScriptableObject) x).equivalentValues(y);
@@ -3796,18 +4000,33 @@ public class ScriptRuntime {
         if (val1 instanceof Number && val2 instanceof Number) {
             return compare((Number) val1, (Number) val2, op);
         } else {
-            if ((val1 instanceof Symbol) || (val2 instanceof Symbol)) {
+            if (isSymbol(val1) || isSymbol(val2)) {
                 throw typeErrorById("msg.compare.symbol");
             }
-            if (val1 instanceof Scriptable) {
-                val1 = ((Scriptable) val1).getDefaultValue(NumberClass);
+            val1 = toPrimitive(val1, NumberClass);
+            val2 = toPrimitive(val2, NumberClass);
+
+            if (val1 instanceof CharSequence) {
+                if (val2 instanceof CharSequence) {
+                    return compareTo(val1.toString(), val2.toString(), op);
+                }
+
+                if (val2 instanceof BigInteger) {
+                    try {
+                        return compareTo(toBigInt(val1.toString()), (BigInteger) val2, op);
+                    } catch (EcmaError e) {
+                        return false;
+                    }
+                }
             }
-            if (val2 instanceof Scriptable) {
-                val2 = ((Scriptable) val2).getDefaultValue(NumberClass);
+            if (val1 instanceof BigInteger && val2 instanceof CharSequence) {
+                try {
+                    return compareTo((BigInteger) val1, toBigInt(val2.toString()), op);
+                } catch (EcmaError e) {
+                    return false;
+                }
             }
-            if (val1 instanceof CharSequence && val2 instanceof CharSequence) {
-                return compareTo(val1.toString(), val2.toString(), op);
-            }
+
             return compare(toNumeric(val1), toNumeric(val2), op);
         }
     }
@@ -4221,7 +4440,7 @@ public class ScriptRuntime {
             catchScopeObject.defineProperty(exceptionName, obj, ScriptableObject.PERMANENT);
         }
 
-        if (isVisible(cx, t)) {
+        if (cx.hasFeature(Context.FEATURE_ENHANCED_JAVA_ACCESS) && isVisible(cx, t)) {
             // Add special Rhino object __exception__ defined in the catch
             // scope that can be used to retrieve the Java exception associated
             // with the JavaScript exception (to get stack trace info, etc.)
@@ -4573,34 +4792,44 @@ public class ScriptRuntime {
         }
     }
 
-    /** @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static String getMessage0(String messageId) {
         return getMessage(messageId, null);
     }
 
-    /** @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static String getMessage1(String messageId, Object arg1) {
         Object[] arguments = {arg1};
         return getMessage(messageId, arguments);
     }
 
-    /** @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static String getMessage2(String messageId, Object arg1, Object arg2) {
         Object[] arguments = {arg1, arg2};
         return getMessage(messageId, arguments);
     }
 
-    /** @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static String getMessage3(String messageId, Object arg1, Object arg2, Object arg3) {
         Object[] arguments = {arg1, arg2, arg3};
         return getMessage(messageId, arguments);
     }
 
-    /** @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static String getMessage4(
             String messageId, Object arg1, Object arg2, Object arg3, Object arg4) {
@@ -4628,7 +4857,9 @@ public class ScriptRuntime {
 
     public static final MessageProvider messageProvider = new DefaultMessageProvider();
 
-    /** @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #getMessageById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static String getMessage(String messageId, Object[] arguments) {
         return messageProvider.getMessage(messageId, arguments);
@@ -4714,28 +4945,36 @@ public class ScriptRuntime {
         return typeError(msg);
     }
 
-    /** @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static EcmaError typeError0(String messageId) {
         String msg = getMessage0(messageId);
         return typeError(msg);
     }
 
-    /** @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static EcmaError typeError1(String messageId, Object arg1) {
         String msg = getMessage1(messageId, arg1);
         return typeError(msg);
     }
 
-    /** @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static EcmaError typeError2(String messageId, Object arg1, Object arg2) {
         String msg = getMessage2(messageId, arg1, arg2);
         return typeError(msg);
     }
 
-    /** @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #typeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     public static EcmaError typeError3(String messageId, String arg1, String arg2, String arg3) {
         String msg = getMessage3(messageId, arg1, arg2, arg3);

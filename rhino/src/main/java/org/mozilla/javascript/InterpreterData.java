@@ -9,6 +9,7 @@ package org.mozilla.javascript;
 import java.io.Serializable;
 import java.math.BigInteger;
 import java.util.Arrays;
+import java.util.Map;
 import org.mozilla.javascript.debug.DebuggableScript;
 
 final class InterpreterData implements Serializable, DebuggableScript {
@@ -68,6 +69,7 @@ final class InterpreterData implements Serializable, DebuggableScript {
     boolean[] argIsConst;
     int argCount;
     boolean argsHasRest;
+    boolean argsHasDefaults;
 
     int itsMaxCalleeArgs;
 
@@ -83,7 +85,7 @@ final class InterpreterData implements Serializable, DebuggableScript {
 
     Object[] literalIds;
 
-    UintMap longJumps;
+    Map<Integer, Integer> longJumps;
 
     int firstLinePC = -1; // PC for the first LINE icode
 
@@ -92,9 +94,6 @@ final class InterpreterData implements Serializable, DebuggableScript {
     boolean evalScriptFlag; // true if script corresponds to eval() code
 
     private int icodeHashCode = 0;
-
-    /** true if the function has been declared like "var foo = function() {...}" */
-    boolean declaredAsVar;
 
     /** true if the function has been declared like "!function() {}". */
     boolean declaredAsFunctionExpression;

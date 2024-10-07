@@ -25,6 +25,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.function.UnaryOperator;
@@ -136,7 +137,7 @@ public class Context implements Closeable {
      * when applied to objects and arrays. If <code>hasFeature(FEATURE_TO_STRING_AS_SOURCE)</code>
      * returns true, calling <code>toString()</code> on JS objects gives the same result as calling
      * <code>toSource()</code>. That is it returns JS source with code to create an object with all
-     * enumeratable fields of the original object instead of printing <code>[object <i>result of
+     * enumerable fields of the original object instead of printing <code>[object <i>result of
      * {@link Scriptable#getClassName()}</i>]</code>.
      *
      * <p>By default {@link #hasFeature(int)} returns true only if the current JS version is set to
@@ -160,7 +161,9 @@ public class Context implements Closeable {
      */
     public static final int FEATURE_PARENT_PROTO_PROPERTIES = 5;
 
-    /** @deprecated In previous releases, this name was given to FEATURE_PARENT_PROTO_PROPERTIES. */
+    /**
+     * @deprecated In previous releases, this name was given to FEATURE_PARENT_PROTO_PROPERTIES.
+     */
     @Deprecated public static final int FEATURE_PARENT_PROTO_PROPRTIES = 5;
 
     /**
@@ -620,7 +623,7 @@ public class Context implements Closeable {
 
     /**
      * Unseal previously sealed Context object. The <code>sealKey</code> argument should not be null
-     * and should match <code>sealKey</code> suplied with the last call to {@link #seal(Object)} or
+     * and should match <code>sealKey</code> supplied with the last call to {@link #seal(Object)} or
      * an exception will be thrown.
      *
      * @see #isSealed()
@@ -952,28 +955,36 @@ public class Context implements Closeable {
         return reportRuntimeError(msg);
     }
 
-    /** @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     static EvaluatorException reportRuntimeError0(String messageId) {
         String msg = ScriptRuntime.getMessageById(messageId);
         return reportRuntimeError(msg);
     }
 
-    /** @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     static EvaluatorException reportRuntimeError1(String messageId, Object arg1) {
         String msg = ScriptRuntime.getMessageById(messageId, arg1);
         return reportRuntimeError(msg);
     }
 
-    /** @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     static EvaluatorException reportRuntimeError2(String messageId, Object arg1, Object arg2) {
         String msg = ScriptRuntime.getMessageById(messageId, arg1, arg2);
         return reportRuntimeError(msg);
     }
 
-    /** @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     static EvaluatorException reportRuntimeError3(
             String messageId, Object arg1, Object arg2, Object arg3) {
@@ -981,7 +992,9 @@ public class Context implements Closeable {
         return reportRuntimeError(msg);
     }
 
-    /** @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead */
+    /**
+     * @deprecated Use {@link #reportRuntimeErrorById(String messageId, Object... args)} instead
+     */
     @Deprecated
     static EvaluatorException reportRuntimeError4(
             String messageId, Object arg1, Object arg2, Object arg3, Object arg4) {
@@ -1402,21 +1415,16 @@ public class Context implements Closeable {
             String sourceName,
             int lineno,
             Object securityDomain) {
-        try {
-            return (Script)
-                    compileImpl(
-                            null,
-                            source,
-                            sourceName,
-                            lineno,
-                            securityDomain,
-                            false,
-                            compiler,
-                            compilationErrorReporter);
-        } catch (IOException ioe) {
-            // Should not happen when dealing with source as string
-            throw new RuntimeException(ioe);
-        }
+        return (Script)
+                compileImpl(
+                        null,
+                        source,
+                        sourceName,
+                        lineno,
+                        securityDomain,
+                        false,
+                        compiler,
+                        compilationErrorReporter);
     }
 
     /**
@@ -1448,22 +1456,16 @@ public class Context implements Closeable {
             String sourceName,
             int lineno,
             Object securityDomain) {
-        try {
-            return (Function)
-                    compileImpl(
-                            scope,
-                            source,
-                            sourceName,
-                            lineno,
-                            securityDomain,
-                            true,
-                            compiler,
-                            compilationErrorReporter);
-        } catch (IOException ioe) {
-            // Should never happen because we just made the reader
-            // from a String
-            throw new RuntimeException(ioe);
-        }
+        return (Function)
+                compileImpl(
+                        scope,
+                        source,
+                        sourceName,
+                        lineno,
+                        securityDomain,
+                        true,
+                        compiler,
+                        compilationErrorReporter);
     }
 
     /**
@@ -2422,8 +2424,7 @@ public class Context implements Closeable {
             Object securityDomain,
             boolean returnFunction,
             Evaluator compiler,
-            ErrorReporter compilationErrorReporter)
-            throws IOException {
+            ErrorReporter compilationErrorReporter) {
         if (sourceName == null) {
             sourceName = "unnamed script";
         }
@@ -2501,8 +2502,7 @@ public class Context implements Closeable {
             int lineno,
             CompilerEnvirons compilerEnv,
             ErrorReporter compilationErrorReporter,
-            boolean returnFunction)
-            throws IOException {
+            boolean returnFunction) {
         Parser p = new Parser(compilerEnv, compilationErrorReporter);
         if (returnFunction) {
             p.calledByCompileFunction = true;
@@ -2569,23 +2569,29 @@ public class Context implements Closeable {
             Evaluator evaluator = createInterpreter();
             if (evaluator != null) return evaluator.getSourcePositionFromStack(cx, linep);
         }
-        /**
-         * A bit of a hack, but the only way to get filename and line number from an enclosing
-         * frame.
-         */
-        StackTraceElement[] stackTrace = new Throwable().getStackTrace();
-        for (StackTraceElement st : stackTrace) {
-            String file = st.getFileName();
-            if (!(file == null || file.endsWith(".java"))) {
-                int line = st.getLineNumber();
-                if (line >= 0) {
-                    linep[0] = line;
-                    return file;
-                }
-            }
-        }
 
-        return null;
+        return getSourcePositionFromJavaStack(linep);
+    }
+
+    /** Returns the current filename in the java stack. */
+    @SuppressWarnings("AndroidJdkLibsChecker")
+    // Android uses interpreter, so we should not get here.
+    static String getSourcePositionFromJavaStack(int[] linep) {
+        Optional<StackWalker.StackFrame> frame =
+                StackWalker.getInstance()
+                        .walk(stream -> stream.filter(Context::frameMatches).findFirst());
+        return frame.map(
+                        f -> {
+                            linep[0] = f.getLineNumber();
+                            return f.getFileName();
+                        })
+                .orElse(null);
+    }
+
+    @SuppressWarnings("AndroidJdkLibsChecker")
+    private static boolean frameMatches(StackWalker.StackFrame frame) {
+        return (frame.getFileName() == null || !frame.getFileName().endsWith(".java"))
+                && frame.getLineNumber() > 0;
     }
 
     RegExpProxy getRegExpProxy() {
@@ -2675,7 +2681,7 @@ public class Context implements Closeable {
     // for Objects, Arrays to tag themselves as being printed out,
     // so they don't print themselves out recursively.
     // Use ObjToIntMap instead of java.util.HashSet for JDK 1.1 compatibility
-    ObjToIntMap iterating;
+    Set<Scriptable> iterating;
 
     Object interpreterSecurityDomain;
 

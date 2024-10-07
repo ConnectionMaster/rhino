@@ -9,7 +9,9 @@ package org.mozilla.javascript;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.mozilla.javascript.ast.AstNode;
 import org.mozilla.javascript.ast.AstRoot;
 import org.mozilla.javascript.ast.Block;
@@ -18,7 +20,6 @@ import org.mozilla.javascript.ast.Jump;
 import org.mozilla.javascript.ast.Scope;
 import org.mozilla.javascript.ast.ScriptNode;
 import org.mozilla.javascript.ast.TemplateCharacters;
-import org.mozilla.javascript.ast.VariableInitializer;
 
 /** Generates bytecode for the Interpreter. */
 class CodeGenerator extends Icode {
@@ -36,11 +37,11 @@ class CodeGenerator extends Icode {
     private ScriptNode scriptOrFn;
     private int iCodeTop;
     private int stackDepth;
-    private int lineNumber;
+    private int lineNumber = -1;
     private int doubleTableTop;
 
-    private ObjToIntMap strings = new ObjToIntMap(20);
-    private ObjToIntMap bigInts = new ObjToIntMap(20);
+    private final HashMap<String, Integer> strings = new HashMap<>();
+    private final HashMap<BigInteger, Integer> bigInts = new HashMap<>();
     private int localTop;
     private int[] labelTable;
     private int labelTableTop;
@@ -48,7 +49,7 @@ class CodeGenerator extends Icode {
     // fixupTable[i] = (label_index << 32) | fixup_site
     private long[] fixupTable;
     private int fixupTableTop;
-    private ArrayList<Object> literalIds = new ArrayList<>();
+    private final ArrayList<Object> literalIds = new ArrayList<>();
 
     private int exceptionTableTop;
 
@@ -117,8 +118,6 @@ class CodeGenerator extends Icode {
             itsData.isES6Generator = true;
         }
 
-        itsData.declaredAsVar = (theFunction.getParent() instanceof VariableInitializer);
-
         generateICodeFromTree(theFunction.getLastChild());
     }
 
@@ -147,10 +146,9 @@ class CodeGenerator extends Icode {
             itsData.itsStringTable = null;
         } else {
             itsData.itsStringTable = new String[strings.size()];
-            ObjToIntMap.Iterator iter = strings.newIterator();
-            for (iter.start(); !iter.done(); iter.next()) {
-                String str = (String) iter.getKey();
-                int index = iter.getValue();
+            for (Map.Entry<String, Integer> e : strings.entrySet()) {
+                String str = e.getKey();
+                int index = e.getValue();
                 if (itsData.itsStringTable[index] != null) Kit.codeBug();
                 itsData.itsStringTable[index] = str;
             }
@@ -166,10 +164,9 @@ class CodeGenerator extends Icode {
             itsData.itsBigIntTable = null;
         } else {
             itsData.itsBigIntTable = new BigInteger[bigInts.size()];
-            ObjToIntMap.Iterator iter = bigInts.newIterator();
-            for (iter.start(); !iter.done(); iter.next()) {
-                BigInteger bigInt = (BigInteger) iter.getKey();
-                int index = iter.getValue();
+            for (Map.Entry<BigInteger, Integer> e : bigInts.entrySet()) {
+                BigInteger bigInt = e.getKey();
+                int index = e.getValue();
                 if (itsData.itsBigIntTable[index] != null) Kit.codeBug();
                 itsData.itsBigIntTable[index] = bigInt;
             }
@@ -189,6 +186,7 @@ class CodeGenerator extends Icode {
         itsData.argIsConst = scriptOrFn.getParamAndVarConst();
         itsData.argCount = scriptOrFn.getParamCount();
         itsData.argsHasRest = scriptOrFn.hasRestParameter();
+        itsData.argsHasDefaults = scriptOrFn.getDefaultParams() != null;
 
         itsData.rawSourceStart = scriptOrFn.getRawSourceStart();
         itsData.rawSourceEnd = scriptOrFn.getRawSourceEnd();
@@ -314,7 +312,7 @@ class CodeGenerator extends Icode {
             case Token.EMPTY:
             case Token.WITH:
                 updateLineNumber(node);
-                // fall through
+            // fall through
             case Token.SCRIPT:
                 while (child != null) {
                     visitStatement(child, initialStackDepth);
@@ -602,6 +600,7 @@ class CodeGenerator extends Icode {
 
             case Token.REF_CALL:
             case Token.CALL:
+            case Token.CALL_OPTIONAL:
             case Token.NEW:
                 {
                     if (type == Token.NEW) {
@@ -685,6 +684,11 @@ class CodeGenerator extends Icode {
                     visitExpression(ifElse, contextFlags & ECF_TAIL);
                     resolveForwardGoto(afterElseJumpStart);
                 }
+                break;
+            case Token.GETPROP_OPTIONAL:
+                visitExpression(child, 0);
+                child = child.getNext();
+                addStringOp(type, child.getString());
                 break;
 
             case Token.GETPROP:
@@ -962,6 +966,7 @@ class CodeGenerator extends Icode {
                 visitArrayComprehension(node, child, child.getNext());
                 break;
 
+            case Token.REF_SPECIAL_OPTIONAL:
             case Token.REF_SPECIAL:
                 visitExpression(child, 0);
                 addStringOp(type, (String) node.getProp(Node.NAME_PROP));
@@ -1057,6 +1062,7 @@ class CodeGenerator extends Icode {
                     stackChange(2);
                     break;
                 }
+            case Token.GETPROP_OPTIONAL:
             case Token.GETPROP:
             case Token.GETELEM:
                 {
@@ -1067,6 +1073,11 @@ class CodeGenerator extends Icode {
                         String property = id.getString();
                         // stack: ... target -> ... function thisObj
                         addStringOp(Icode_PROP_AND_THIS, property);
+                        stackChange(1);
+                    } else if (type == Token.GETPROP_OPTIONAL) {
+                        String property = id.getString();
+                        // stack: ... target -> ... function thisObj
+                        addStringOp(Icode_PROP_AND_THIS_OPTIONAL, property);
                         stackChange(1);
                     } else {
                         visitExpression(id, 0);
@@ -1343,7 +1354,7 @@ class CodeGenerator extends Icode {
         int offsetSite = fromPC + 1;
         if (offset != (short) offset) {
             if (itsData.longJumps == null) {
-                itsData.longJumps = new UintMap();
+                itsData.longJumps = new HashMap<>();
             }
             itsData.longJumps.put(offsetSite, jumpPC);
             offset = 0;
@@ -1442,7 +1453,7 @@ class CodeGenerator extends Icode {
                     addUint8(varIndex);
                     return;
                 }
-                // fallthrough
+            // fallthrough
             case Icode_VAR_INC_DEC:
                 addIndexOp(op, varIndex);
                 return;
@@ -1469,7 +1480,7 @@ class CodeGenerator extends Icode {
     }
 
     private void addStringPrefix(String str) {
-        int index = strings.get(str, -1);
+        int index = strings.getOrDefault(str, -1);
         if (index == -1) {
             index = strings.size();
             strings.put(str, index);
@@ -1489,7 +1500,7 @@ class CodeGenerator extends Icode {
     }
 
     private void addBigInt(BigInteger n) {
-        int index = bigInts.get(n, -1);
+        int index = bigInts.getOrDefault(n, -1);
         if (index == -1) {
             index = bigInts.size();
             bigInts.put(n, index);

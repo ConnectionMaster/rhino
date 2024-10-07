@@ -9,6 +9,7 @@ package org.mozilla.javascript;
 import java.io.IOException;
 import java.io.Reader;
 import java.math.BigInteger;
+import java.util.HashMap;
 
 /**
  * This class implements the JavaScript scanner.
@@ -576,6 +577,7 @@ class TokenStream implements Parser.CurrentPositionReporter {
         return id & 0xff;
     }
 
+    @SuppressWarnings("AndroidJdkLibsChecker")
     private static boolean isValidIdentifierName(String str) {
         int i = 0;
         for (int c : str.codePoints().toArray()) {
@@ -782,7 +784,7 @@ class TokenStream implements Parser.CurrentPositionReporter {
                         }
                         // Save the string in case we need to use in
                         // object literal definitions.
-                        this.string = (String) allStrings.intern(str);
+                        this.string = internString(str);
                         if (result != Token.RESERVED) {
                             return result;
                         } else if (parser.compilerEnv.getLanguageVersion() >= Context.VERSION_ES6) {
@@ -807,7 +809,7 @@ class TokenStream implements Parser.CurrentPositionReporter {
                     return Token.ERROR;
                 }
 
-                this.string = (String) allStrings.intern(str);
+                this.string = internString(str);
                 return Token.NAME;
             }
 
@@ -1012,8 +1014,8 @@ class TokenStream implements Parser.CurrentPositionReporter {
                                 c = '\t';
                                 break;
 
-                                // \v a late addition to the ECMA spec,
-                                // it is not in Java, so use 0xb
+                            // \v a late addition to the ECMA spec,
+                            // it is not in Java, so use 0xb
                             case 'v':
                                 c = 0xb;
                                 break;
@@ -1114,7 +1116,7 @@ class TokenStream implements Parser.CurrentPositionReporter {
                 }
 
                 String str = getStringFromBuffer();
-                this.string = (String) allStrings.intern(str);
+                this.string = internString(str);
                 return Token.STRING;
             }
 
@@ -1145,6 +1147,12 @@ class TokenStream implements Parser.CurrentPositionReporter {
                 case ',':
                     return Token.COMMA;
                 case '?':
+                    if (matchChar('.')) {
+                        return Token.QUESTION_DOT;
+                    }
+                    if (matchChar('?')) {
+                        return Token.NULLISH_COALESCING;
+                    }
                     return Token.HOOK;
                 case ':':
                     if (matchChar(':')) {
@@ -1166,7 +1174,8 @@ class TokenStream implements Parser.CurrentPositionReporter {
 
                 case '|':
                     if (matchChar('|')) {
-                        return Token.OR;
+                        if (matchChar('=')) return Token.ASSIGN_LOGICAL_OR;
+                        else return Token.OR;
                     } else if (matchChar('=')) {
                         return Token.ASSIGN_BITOR;
                     } else {
@@ -1181,7 +1190,8 @@ class TokenStream implements Parser.CurrentPositionReporter {
 
                 case '&':
                     if (matchChar('&')) {
-                        return Token.AND;
+                        if (matchChar('=')) return Token.ASSIGN_LOGICAL_AND;
+                        else return Token.AND;
                     } else if (matchChar('=')) {
                         return Token.ASSIGN_BITAND;
                     } else {
@@ -1401,6 +1411,20 @@ class TokenStream implements Parser.CurrentPositionReporter {
             }
         }
         return c;
+    }
+
+    // Use a HashMap to ensure that we only have one copy -- the original one
+    // of any particular string. Yes, the "String.intern" function also does this,
+    // but this is how Rhino has worked for years and it's not clear that we
+    // want to make the JVM-wide intern pool as big as it might happen if we
+    // used that.
+    private String internString(String s) {
+        String existing = allStrings.putIfAbsent(s, s);
+        if (existing == null) {
+            // First time we saw it
+            return s;
+        }
+        return existing;
     }
 
     private static boolean isAlpha(int c) {
@@ -2220,7 +2244,7 @@ class TokenStream implements Parser.CurrentPositionReporter {
                 // ignore it, we're already displaying an error...
                 return EOF_CHAR;
             }
-            // index recalculuation as fillSourceBuffer can move saved
+            // index recalculation as fillSourceBuffer can move saved
             // line buffer and change sourceCursor
             index -= (oldSourceCursor - sourceCursor);
         }
@@ -2421,7 +2445,7 @@ class TokenStream implements Parser.CurrentPositionReporter {
 
     private char[] stringBuffer = new char[128];
     private int stringBufferTop;
-    private ObjToIntMap allStrings = new ObjToIntMap(50);
+    private final HashMap<String, String> allStrings = new HashMap<>();
 
     // Room to backtrace from to < on failed match of the last - in <!--
     private final int[] ungetBuffer = new int[3];
